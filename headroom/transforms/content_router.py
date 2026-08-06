@@ -60,10 +60,10 @@ from ..config import (
 )
 from ..parser import CCR_RETRIEVAL_MARKER_RE
 from ..tokenizer import Tokenizer
-from ..tokenizers.base import count_content_blocks
 from ..tokenizers.estimator import EstimatingTokenCounter
 from . import mixed_content as _mixed_content
 from .base import Transform
+from .compression_policy import cache_write_multiplier_for_ttl
 from .compressor_registry import (
     CompressInput,
     CompressorDescriptor,
@@ -1177,29 +1177,42 @@ def _gain_bucket(gain: float) -> str:
 def _netcost_message_tokens(message: dict[str, Any], tokenizer: Tokenizer) -> int:
     """Token count of a message for net-cost suffix (S) estimation.
 
-    String content is counted directly. Block-list content is delegated to the
-    canonical block counter, which knows how to price non-text blocks.
-
-    This function used to walk the list itself and fall back to
-    ``str(block)`` for anything that was not ``text`` or ``tool_result``, on the
-    stated assumption that such blocks "rarely dominate a suffix". An ``image``
-    block is the exception that breaks it: ``str()`` embeds the whole base64
-    payload, so one screenshot counted ~100,000 tokens instead of ~1,600
-    (57x-146x over, growing with image size).
-
-    That mattered because S is the cache-bust cost — the tokens re-written if
-    message *j* is mutated — so an image inflated S for **every message before
-    it**, and the break-even gate then refused to compress any of them.
-    ``BaseTokenizer._count_content_parts`` already solves this (see its "1MB
-    image = ~330K fake tokens without this" guard); this walk simply predated
-    it. Delegating also means new block types are priced in one place.
+    String content is counted directly. Anthropic block-list content is
+    counted by summing the text-bearing fields (``text`` blocks and
+    ``tool_result`` content) rather than stringifying the whole list, which
+    would count Python ``repr`` punctuation and type names and badly
+    miscount S — the value that drives the break-even gate decision.
     """
     content = message.get("content", "")
     if isinstance(content, str):
         return tokenizer.count_text(content)
     if not isinstance(content, list):
         return tokenizer.count_text(str(content))
-    return count_content_blocks(content, tokenizer.count_text)
+    total = 0
+    for block in content:
+        if not isinstance(block, dict):
+            total += tokenizer.count_text(str(block))
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            total += tokenizer.count_text(str(block.get("text", "")))
+        elif block_type == "tool_result":
+            tc = block.get("content", "")
+            if isinstance(tc, str):
+                total += tokenizer.count_text(tc)
+            elif isinstance(tc, list):
+                for sub in tc:
+                    if isinstance(sub, dict) and sub.get("type") == "text":
+                        total += tokenizer.count_text(str(sub.get("text", "")))
+                    else:
+                        total += tokenizer.count_text(str(sub))
+            else:
+                total += tokenizer.count_text(str(tc))
+        else:
+            # Other blocks (image, tool_use input, …) — repr is a rough proxy
+            # but bounded; these rarely dominate a suffix.
+            total += tokenizer.count_text(str(block))
+    return total
 
 
 class CompressionCache:
@@ -4439,6 +4452,7 @@ class ContentRouter(Transform):
         transforms_applied: list[str],
         batch_state: dict[str, int | None] | None = None,
         p_alive_override: float | None = None,
+        write_multiplier: float | None = None,
     ) -> bool:
         """Break-even gate for one candidate mutation (#856 P2, flag-gated).
 
@@ -4523,7 +4537,15 @@ class ContentRouter(Transform):
                 p_alive = _p_alive
             except ValueError:
                 logger.warning("HEADROOM_NET_COST_P_ALIVE malformed; using 1.0")
-        gain = float(policy.net_mutation_gain(delta_t, suffix, reads, p_alive))
+        gain = float(
+            policy.net_mutation_gain(
+                delta_t,
+                suffix,
+                reads,
+                p_alive,
+                write_multiplier=write_multiplier,
+            )
+        )
         allowed = gain > 0.0
         logger.info(
             "NetCostPolicy slot=%d delta_t=%d suffix=%d reads=%.1f p_alive=%.2f "
@@ -4886,7 +4908,22 @@ class ContentRouter(Transform):
         # env-constant behaviour. Derived once here (not per slot) — idle is a
         # per-request property, like frozen_message_count.
         netcost_p_alive_override: float | None = None
+        netcost_write_multiplier: float | None = None
         if netcost_enabled:
+            # Prefer the authoritative per-request prompt-cache TTL when the
+            # caller has one; retain the env setting for other providers and
+            # legacy callers.
+            request_ttl = kwargs.get("cache_ttl_seconds")
+            if request_ttl is None:
+                netcost_ttl = _net_cost_cache_ttl_seconds()
+            else:
+                try:
+                    netcost_ttl = float(request_ttl)
+                except (TypeError, ValueError):
+                    netcost_ttl = _net_cost_cache_ttl_seconds()
+                if not math.isfinite(netcost_ttl) or netcost_ttl <= 0.0:
+                    netcost_ttl = _net_cost_cache_ttl_seconds()
+            netcost_write_multiplier = cache_write_multiplier_for_ttl(netcost_ttl)
             netcost_suffix_tokens = [0] * (num_messages + 1)
             for j in range(num_messages - 1, -1, -1):
                 netcost_suffix_tokens[j] = netcost_suffix_tokens[j + 1] + _netcost_message_tokens(
@@ -4899,8 +4936,7 @@ class ContentRouter(Transform):
                 except (TypeError, ValueError):
                     idle_f = None
                 if idle_f is not None and math.isfinite(idle_f) and idle_f >= 0.0:
-                    ttl = _net_cost_cache_ttl_seconds()
-                    netcost_p_alive_override = max(0.0, 1.0 - idle_f / ttl)
+                    netcost_p_alive_override = max(0.0, 1.0 - idle_f / netcost_ttl)
 
         # Tasks: list of (slot_index, content, context, bias, content_key)
         _PendingTask = tuple[int, str, str, float, int, bool]
@@ -5204,6 +5240,7 @@ class ContentRouter(Transform):
                         transforms_applied=transforms_applied,
                         batch_state=netcost_batch_state,
                         p_alive_override=netcost_p_alive_override,
+                        write_multiplier=netcost_write_multiplier,
                     ):
                         # Net-cost gate: mutation would cost more in cache
                         # invalidation than it saves — leave untouched.
@@ -5381,6 +5418,7 @@ class ContentRouter(Transform):
                         transforms_applied=transforms_applied,
                         batch_state=netcost_batch_state,
                         p_alive_override=netcost_p_alive_override,
+                        write_multiplier=netcost_write_multiplier,
                     ):
                         result_slots[slot_idx] = message
                         continue
