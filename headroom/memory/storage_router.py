@@ -142,9 +142,8 @@ class ProjectResolver:
     """Resolve a request to a (key, display_name) project identity.
 
     Looks at request signals in priority order and returns ``None`` when
-    no signal yields a project. The router uses that ``None`` to apply
-    the configured fallback (today: ``GLOBAL`` per the user's choice in
-    the bug-fix design discussion).
+    no trusted signal yields a project. The router uses that ``None`` to
+    apply the configured fallback (fail-closed ``empty`` by default).
     """
 
     def resolve(self, ctx: RequestContext) -> tuple[str, str] | None:
@@ -178,23 +177,13 @@ class ProjectResolver:
             if ident is not None:
                 return ident
 
-        # Tier 3: the project attribution header emitted by `headroom wrap`.
-        # This keeps memory and CCR routing aligned with the savings tracker.
-        project_header = self._first_nonempty_header(ctx.headers, "x-headroom-project")
-        if project_header:
-            display = unquote(project_header)
-            safe = self._sanitize_basename(project_header)
-            if safe:
-                digest = hashlib.sha256(display.encode("utf-8")).hexdigest()[:16]
-                return f"{safe}-{digest}", display
-
-        # Tier 4: CLI-level override of the project root.
+        # Tier 3: CLI-level override of the project root.
         if ctx.project_root_override:
             ident = self._identity_from_cwd(ctx.project_root_override)
             if ident is not None:
                 return ident
 
-        # Tier 5: parse the system prompt for a ``<env>`` cwd line.
+        # Tier 4: parse the system prompt for a ``<env>`` cwd line.
         sys_cwd = self._extract_cwd_from_system_prompt(ctx.system_prompt)
         if sys_cwd:
             ident = self._identity_from_cwd(sys_cwd)
@@ -235,7 +224,10 @@ class ProjectResolver:
 
     @classmethod
     def _identity_from_cwd(cls, raw_cwd: str) -> tuple[str, str] | None:
-        cwd = raw_cwd.strip()
+        # The wrapper percent-encodes this header so non-ASCII paths remain
+        # valid HTTP values. ``unquote`` restores the canonical path before
+        # realpath/hash computation.
+        cwd = unquote(raw_cwd.strip())
         if not cwd:
             return None
         # Normalise so symlinked / trailing-slash variants collapse to
@@ -345,7 +337,7 @@ class BackendRouter:
                 logger.warning(
                     "event=memory_project_unresolved behavior=empty user_id=%s "
                     "hint='set x-headroom-project-id, x-headroom-cwd, or "
-                    "x-headroom-project header, "
+                    "provide a cwd in the system prompt, "
                     "or set memory.unresolved_project_fallback=global to opt-in "
                     "to legacy cross-project GLOBAL pooling (cross-project leak risk).'",
                     ctx.base_user_id,

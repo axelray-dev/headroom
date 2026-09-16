@@ -770,7 +770,7 @@ class MemoryHandler:
         # default after the 2026-05-26 incident). The sentinel signal is
         # `mode=PROJECT` + `project_key=None`: project mode was requested
         # but no x-headroom-project-id / x-headroom-cwd /
-        # x-headroom-project / system-prompt cwd: was available, so we
+        # system-prompt cwd: was available, so we
         # have no idea which project this request belongs to. Returning
         # None here skips injection
         # entirely — better than pooling into GLOBAL and surfacing

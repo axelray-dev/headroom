@@ -353,9 +353,10 @@ class AnthropicHandlerMixin:
         Uses the same ``ProjectResolver`` the memory subsystem uses
         (``headroom/memory/storage_router.py``) so CCR and memory always
         agree on which project a request belongs to. Tier order matches:
-        ``x-headroom-project-id`` → ``x-headroom-cwd`` →
-        ``x-headroom-project`` → CLI override → ``cwd:`` line in the
-        system prompt.
+        ``x-headroom-project-id`` → ``x-headroom-cwd`` → CLI override →
+        ``cwd:`` line in the system prompt. ``x-headroom-project`` is only a
+        human-readable savings label and is intentionally not an identity
+        signal.
 
         Returns:
             ``(workspace_key, workspace_label)``. If no signal yields a

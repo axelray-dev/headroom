@@ -77,17 +77,36 @@ def test_resolver_tier2_explicit_cwd_header() -> None:
     assert len(key.split("-")[-1]) == 16  # sha256 prefix length
 
 
-def test_resolver_tier3_wrap_project_header() -> None:
+def test_resolver_project_label_alone_fails_closed() -> None:
     r = ProjectResolver()
-    out = r.resolve(_ctx(headers={"X-Headroom-Project": "wrapped-project"}))
-    assert out is not None
-    key, display = out
-    assert display == "wrapped-project"
-    assert key.startswith("wrapped-project-")
-    assert len(key.split("-")[-1]) == 16  # sha256 prefix length
+    # X-Headroom-Project is a display/savings label, not a trusted identity.
+    assert r.resolve(_ctx(headers={"X-Headroom-Project": "wrapped-project"})) is None
 
 
-def test_resolver_tier4_cli_override() -> None:
+def test_resolver_project_label_does_not_collapse_distinct_cwds() -> None:
+    r = ProjectResolver()
+    out_a = r.resolve(
+        _ctx(
+            headers={
+                "X-Headroom-Project": "api",
+                "X-Headroom-Cwd": "/work/acme/api",
+            }
+        )
+    )
+    out_b = r.resolve(
+        _ctx(
+            headers={
+                "X-Headroom-Project": "api",
+                "X-Headroom-Cwd": "/work/other/api",
+            }
+        )
+    )
+    assert out_a is not None and out_b is not None
+    assert out_a[0] != out_b[0]
+    assert out_a[1] == out_b[1] == "api"
+
+
+def test_resolver_tier3_cli_override() -> None:
     r = ProjectResolver()
     out = r.resolve(_ctx(project_root_override="/Users/foo/code/project-c"))
     assert out is not None
@@ -95,7 +114,7 @@ def test_resolver_tier4_cli_override() -> None:
     assert display == "project-c"
 
 
-def test_resolver_tier5_env_block_primary_working_directory() -> None:
+def test_resolver_tier4_env_block_primary_working_directory() -> None:
     r = ProjectResolver()
     prompt = (
         "You have been invoked in the following environment:\n"
@@ -108,7 +127,7 @@ def test_resolver_tier5_env_block_primary_working_directory() -> None:
     assert display == "headroom"
 
 
-def test_resolver_tier5_env_block_older_working_directory_format() -> None:
+def test_resolver_tier4_env_block_older_working_directory_format() -> None:
     r = ProjectResolver()
     prompt = "Working directory: /Users/foo/code/legacy-project\n"
     out = r.resolve(_ctx(system_prompt=prompt))
@@ -117,7 +136,7 @@ def test_resolver_tier5_env_block_older_working_directory_format() -> None:
     assert display == "legacy-project"
 
 
-def test_resolver_tier5_env_block_cwd_format() -> None:
+def test_resolver_tier4_env_block_cwd_format() -> None:
     r = ProjectResolver()
     prompt = "  cwd: /Users/foo/code/cwd-style\n"
     out = r.resolve(_ctx(system_prompt=prompt))
