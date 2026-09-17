@@ -173,7 +173,7 @@ class ProjectResolver:
         # Tier 2: client-provided explicit cwd (any client).
         explicit_cwd = self._first_nonempty_header(ctx.headers, "x-headroom-cwd")
         if explicit_cwd:
-            ident = self._identity_from_cwd(explicit_cwd)
+            ident = self._identity_from_cwd(explicit_cwd, percent_encoded=True)
             if ident is not None:
                 return ident
 
@@ -223,11 +223,18 @@ class ProjectResolver:
         return None
 
     @classmethod
-    def _identity_from_cwd(cls, raw_cwd: str) -> tuple[str, str] | None:
-        # The wrapper percent-encodes this header so non-ASCII paths remain
-        # valid HTTP values. ``unquote`` restores the canonical path before
-        # realpath/hash computation.
-        cwd = unquote(raw_cwd.strip())
+    def _identity_from_cwd(
+        cls, raw_cwd: str, *, percent_encoded: bool = False
+    ) -> tuple[str, str] | None:
+        # ``percent_encoded`` is set only for the ``x-headroom-cwd`` header,
+        # which the wrapper percent-encodes so non-ASCII paths stay valid HTTP
+        # values; there ``unquote`` restores the canonical path before
+        # realpath/hash computation. Every other tier (CLI override, system
+        # prompt) carries a literal filesystem path that was never encoded, so
+        # decoding it would fold genuinely distinct directories together: a
+        # real ``/work/acme%2Fapi`` would collapse onto ``/work/acme/api`` and
+        # share its store. Decode at the boundary that encodes, nowhere else.
+        cwd = unquote(raw_cwd.strip()) if percent_encoded else raw_cwd.strip()
         if not cwd:
             return None
         # Normalise so symlinked / trailing-slash variants collapse to
