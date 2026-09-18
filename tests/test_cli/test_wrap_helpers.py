@@ -444,8 +444,12 @@ class TestApplyProjectHeaderEnv:
         assert memory_a is not None and memory_b is not None
         assert memory_a[0] != memory_b[0]
 
-        ccr_a = AnthropicHandlerMixin()._resolve_ccr_workspace(SimpleNamespace(headers=headers_a), {})
-        ccr_b = AnthropicHandlerMixin()._resolve_ccr_workspace(SimpleNamespace(headers=headers_b), {})
+        ccr_a = AnthropicHandlerMixin()._resolve_ccr_workspace(
+            SimpleNamespace(headers=headers_a), {}
+        )
+        ccr_b = AnthropicHandlerMixin()._resolve_ccr_workspace(
+            SimpleNamespace(headers=headers_b), {}
+        )
         assert ccr_a[0] == memory_a[0]
         assert ccr_b[0] == memory_b[0]
         assert ccr_a[0] != ccr_b[0]
