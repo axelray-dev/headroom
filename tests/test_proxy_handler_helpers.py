@@ -1031,7 +1031,7 @@ def test_resolve_ccr_workspace_explicit_project_id_wins() -> None:
     """x-headroom-project-id is the highest-priority signal."""
     request = _fake_request({"x-headroom-project-id": "my-cool-project"})
     body = {}
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(request, body)
     assert key.startswith("my-cool-project-")
     assert len(key.split("-")[-1]) == 16
     assert label == "my-cool-project"
@@ -1041,7 +1041,7 @@ def test_resolve_ccr_workspace_cwd_header() -> None:
     """x-headroom-cwd produces a stable per-cwd key + basename label."""
     request = _fake_request({"x-headroom-cwd": "/home/user/code/daphni-rails"})
     body = {}
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(request, body)
     # Key format: "{basename}-{sha256[:16]}" — stable per absolute cwd.
     assert key.startswith("daphni-rails-")
     assert len(key) >= len("daphni-rails-") + 16
@@ -1050,10 +1050,10 @@ def test_resolve_ccr_workspace_cwd_header() -> None:
 
 def test_resolve_ccr_workspace_two_cwds_get_distinct_keys() -> None:
     """Two different cwds produce different workspace keys (cross-leak prevention)."""
-    key_a, _ = AnthropicHandlerMixin._resolve_ccr_workspace(
+    key_a, _ = AnthropicHandlerMixin()._resolve_ccr_workspace(
         _fake_request({"x-headroom-cwd": "/home/user/code/daphni-rails"}), {}
     )
-    key_b, _ = AnthropicHandlerMixin._resolve_ccr_workspace(
+    key_b, _ = AnthropicHandlerMixin()._resolve_ccr_workspace(
         _fake_request({"x-headroom-cwd": "/home/user/code/tamag0"}), {}
     )
     assert key_a != key_b, "different cwds must yield different workspace keys"
@@ -1061,7 +1061,7 @@ def test_resolve_ccr_workspace_two_cwds_get_distinct_keys() -> None:
 
 def test_resolve_ccr_workspace_project_label_alone_fails_closed() -> None:
     """The savings label must not become a memory/CCR identity."""
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(
         _fake_request({"x-headroom-project": "api"}), {}
     )
     assert key == ""
@@ -1070,7 +1070,7 @@ def test_resolve_ccr_workspace_project_label_alone_fails_closed() -> None:
 
 def test_resolve_ccr_workspace_project_label_does_not_collapse_cwds() -> None:
     """A user-supplied label cannot merge two distinct cwd identities."""
-    key_a, _ = AnthropicHandlerMixin._resolve_ccr_workspace(
+    key_a, _ = AnthropicHandlerMixin()._resolve_ccr_workspace(
         _fake_request(
             {
                 "x-headroom-project": "api",
@@ -1079,7 +1079,7 @@ def test_resolve_ccr_workspace_project_label_does_not_collapse_cwds() -> None:
         ),
         {},
     )
-    key_b, _ = AnthropicHandlerMixin._resolve_ccr_workspace(
+    key_b, _ = AnthropicHandlerMixin()._resolve_ccr_workspace(
         _fake_request(
             {
                 "x-headroom-project": "api",
@@ -1095,7 +1095,7 @@ def test_resolve_ccr_workspace_no_signal_returns_empty() -> None:
     """No project-id, no cwd header, no system prompt → fail-closed signal."""
     request = _fake_request({})
     body = {}
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(request, body)
     assert key == ""
     assert label is None
 
@@ -1106,7 +1106,7 @@ def test_resolve_ccr_workspace_system_prompt_cwd_fallback() -> None:
     body = {
         "system": [{"type": "text", "text": "You are helpful.\ncwd: /home/u/code/my-project\nGo."}]
     }
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(request, body)
     # The label is the basename of the cwd extracted from the prompt.
     assert label == "my-project"
     assert key.startswith("my-project-")
@@ -1124,7 +1124,7 @@ def test_resolve_ccr_workspace_malformed_request_returns_empty() -> None:
     # The helper catches the exception, logs it, and returns the fail-
     # closed sentinel ("", None). Critically, it does NOT raise — the
     # proxy must continue serving the request even if CCR scoping fails.
-    key, label = AnthropicHandlerMixin._resolve_ccr_workspace(request, body)
+    key, label = AnthropicHandlerMixin()._resolve_ccr_workspace(request, body)
     assert key == ""
     assert label is None
 
