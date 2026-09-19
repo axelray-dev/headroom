@@ -84,7 +84,7 @@ require_cmd() {
 
 ensure_host_dirs() {
   mkdir -p \
-    "${HEADROOM_HOST_HOME}/.config" \
+    "${HEADROOM_HOST_HOME}/.config/opencode" \
     "${HEADROOM_HOST_HOME}/.headroom" \
     "${HEADROOM_HOST_HOME}/.claude" \
     "${HEADROOM_HOST_HOME}/.codex" \
@@ -120,7 +120,7 @@ append_common_container_args() {
   ref+=(-v "${HEADROOM_HOST_HOME}/.claude:${HEADROOM_CONTAINER_HOME}/.claude")
   ref+=(-v "${HEADROOM_HOST_HOME}/.codex:${HEADROOM_CONTAINER_HOME}/.codex")
   ref+=(-v "${HEADROOM_HOST_HOME}/.gemini:${HEADROOM_CONTAINER_HOME}/.gemini")
-  ref+=(-v "${HEADROOM_HOST_HOME}/.config:${HEADROOM_CONTAINER_HOME}/.config")
+  ref+=(-v "${HEADROOM_HOST_HOME}/.config/opencode:${HEADROOM_CONTAINER_HOME}/.config/opencode")
 
   if command -v id >/dev/null 2>&1; then
     ref+=(--user "$(id -u):$(id -g)")

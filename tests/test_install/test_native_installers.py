@@ -604,7 +604,8 @@ def test_bash_native_wrapper_supports_opencode(tmp_path: Path) -> None:
             for call in docker_calls
             if call[:2] == ["run", "--rm"] and "--prepare-only" in call and "opencode" in call
         )
-        assert f"{home}/.config:/tmp/headroom-home/.config" in prepare_call
+        assert f"{home}/.config/opencode:/tmp/headroom-home/.config/opencode" in prepare_call
+        assert f"{home}/.config:/tmp/headroom-home/.config" not in prepare_call
 
         opencode_output = Path(env["FAKE_OPENCODE_LOG"]).read_text(encoding="utf-8")
         assert f"CONFIG={config_content}" in opencode_output
