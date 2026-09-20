@@ -21,6 +21,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from headroom.utils import format_exception_message
+
 from .base import Backend, BackendResponse, StreamEvent
 
 logger = logging.getLogger(__name__)
@@ -1177,13 +1179,14 @@ class LiteLLMBackend(Backend):
             )
 
         except Exception as e:
-            logger.error(f"LiteLLM error: {e}")
+            error_message = format_exception_message(e)
+            logger.error(f"LiteLLM error: {error_message}")
 
             # Map to Anthropic error format
             error_type = "api_error"
             status_code = 500
 
-            error_str = str(e).lower()
+            error_str = error_message.lower()
             if "authentication" in error_str or "credentials" in error_str:
                 error_type = "authentication_error"
                 status_code = 401
@@ -1197,10 +1200,10 @@ class LiteLLMBackend(Backend):
             return BackendResponse(
                 body={
                     "type": "error",
-                    "error": {"type": error_type, "message": str(e)},
+                    "error": {"type": error_type, "message": error_message},
                 },
                 status_code=status_code,
-                error=str(e),
+                error=error_message,
             )
 
     async def stream_message(
@@ -1587,12 +1590,13 @@ class LiteLLMBackend(Backend):
             )
 
         except Exception as e:
-            logger.error(f"LiteLLM streaming error: {e}")
+            error_message = format_exception_message(e)
+            logger.error(f"LiteLLM streaming error: {error_message}")
             yield StreamEvent(
                 event_type="error",
                 data={
                     "type": "error",
-                    "error": {"type": "api_error", "message": str(e)},
+                    "error": {"type": "api_error", "message": error_message},
                 },
             )
 
