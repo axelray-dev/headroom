@@ -4219,6 +4219,7 @@ class OpenAIHandlerMixin:
                     existing_tools=tools,
                     memory_tools_to_inject=memory_tool_defs,
                     inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                    client_declared_tools=bool(_original_tools),
                 )
                 if mem_tools_injected:
                     memory_tools_injected = True

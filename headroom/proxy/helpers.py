@@ -2294,6 +2294,7 @@ def apply_session_sticky_memory_tools(
     existing_tools: list[dict[str, Any]] | None,
     memory_tools_to_inject: list[dict[str, Any]],
     inject_this_turn: bool,
+    client_declared_tools: bool = True,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Apply sticky-on memory tool injection per `SessionToolTracker`.
 
@@ -2322,6 +2323,11 @@ def apply_session_sticky_memory_tools(
     ``inject_this_turn`` flag drives the decision verbatim. We log the
     bypass once so operators can see it.
 
+    ``client_declared_tools`` is False when the inbound request omitted
+    tools or explicitly sent an empty list. In that case memory tools are
+    never added, including sticky replay, because the client cannot service
+    them.
+
     Returns ``(updated_tools, was_injected)``. The returned list is a
     fresh list (caller-safe). ``was_injected`` is True iff at least one
     memory tool was added to the list.
@@ -2330,6 +2336,16 @@ def apply_session_sticky_memory_tools(
         raise ValueError(f"unsupported provider: {provider!r}")
 
     tools_out: list[dict[str, Any]] = list(existing_tools) if existing_tools else []
+    if not client_declared_tools:
+        log_tool_injection_decision(
+            provider=provider,
+            session_id=session_id,
+            decision="skip_no_client_tools",
+            tool_definition_bytes_count=0,
+            request_id=request_id,
+        )
+        return tools_out, False
+
     existing_names: set[str] = set()
     for t in tools_out:
         n = _extract_tool_name(t)
