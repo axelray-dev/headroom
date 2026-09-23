@@ -5481,6 +5481,7 @@ class OpenAIHandlerMixin:
 
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
+        client_declared_response_tools = bool(body.get("tools"))
         body_mutation_tracker = BodyMutationTracker()
         _bypass = self._headroom_bypass_enabled(request.headers)
         if _bypass:
@@ -5832,6 +5833,7 @@ class OpenAIHandlerMixin:
                         existing_tools=resp_tools,
                         memory_tools_to_inject=memory_tool_defs_responses,
                         inject_this_turn=bool(self.memory_handler.config.inject_tools),
+                        client_declared_tools=client_declared_response_tools,
                     )
                     if mem_tools_injected:
                         body["tools"] = resp_tools
@@ -7506,6 +7508,7 @@ class OpenAIHandlerMixin:
                         t.get("name") or t.get("function", {}).get("name", "?")
                         for t in (ws_response_body.get("tools") or [])
                     ]
+                    client_declared_ws_tools = bool(ws_response_body.get("tools"))
                     instr_preview = (ws_response_body.get("instructions") or "")[:200]
                     logger.info(
                         f"[{request_id}] WS Memory: Codex tools={existing_tool_names}, "
@@ -7626,6 +7629,7 @@ class OpenAIHandlerMixin:
                         inject_this_turn=bool(
                             self.memory_handler.config.inject_tools and ws_memory_tools_allowed
                         ),
+                        client_declared_tools=client_declared_ws_tools,
                     )
                     if mem_injected:
                         ws_response_body["tools"] = ws_tools
