@@ -1788,13 +1788,14 @@ class LiteLLMBackend(Backend):
             )
 
         except Exception as e:
-            logger.error(f"LiteLLM OpenAI error: {e}")
+            error_message = format_exception_message(e)
+            logger.error(f"LiteLLM OpenAI error: {error_message}")
 
             # Map to OpenAI error format
             error_type = "api_error"
             status_code = 500
 
-            error_str = str(e).lower()
+            error_str = error_message.lower()
             if "authentication" in error_str or "credentials" in error_str:
                 error_type = "invalid_api_key"
                 status_code = 401
@@ -1808,13 +1809,13 @@ class LiteLLMBackend(Backend):
             return BackendResponse(
                 body={
                     "error": {
-                        "message": str(e),
+                        "message": error_message,
                         "type": error_type,
                         "code": error_type,
                     }
                 },
                 status_code=status_code,
-                error=str(e),
+                error=error_message,
             )
 
     async def stream_openai_message(
@@ -1884,10 +1885,11 @@ class LiteLLMBackend(Backend):
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            logger.error(f"LiteLLM OpenAI streaming error: {e}")
+            error_message = format_exception_message(e)
+            logger.error(f"LiteLLM OpenAI streaming error: {error_message}")
             error_data = {
                 "error": {
-                    "message": str(e),
+                    "message": error_message,
                     "type": "api_error",
                     "code": "backend_error",
                 }

@@ -14,6 +14,7 @@ importorskip_no_env_leak("litellm")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from headroom.backends.anyllm import AnyLLMBackend  # noqa: E402
 from headroom.backends.base import BackendResponse  # noqa: E402
 from headroom.backends.litellm import LiteLLMBackend  # noqa: E402
 from headroom.proxy.server import ProxyConfig, create_app  # noqa: E402
@@ -57,6 +58,83 @@ async def test_stream_message_names_transport_error_without_message() -> None:
 
     error_event = next(event for event in events if event.event_type == "error")
     assert error_event.data["error"]["message"] == "ReadTimeout (no message)"
+
+
+@pytest.mark.asyncio
+async def test_anyllm_backend_names_transport_error_without_message() -> None:
+    pytest.importorskip("any_llm")
+    fake_llm = MagicMock()
+    fake_llm.acompletion = AsyncMock(side_effect=httpx.ReadError(""))
+
+    with patch("headroom.backends.anyllm.AnyLLM.create", return_value=fake_llm):
+        backend = AnyLLMBackend(provider="anthropic")
+        result = await backend.send_message(_BODY, {})
+
+    assert result.status_code == 500
+    assert result.error == "ReadError (no message)"
+    assert result.body["error"]["message"] == "ReadError (no message)"
+
+
+@pytest.mark.asyncio
+async def test_anyllm_stream_backend_names_transport_error_without_message() -> None:
+    pytest.importorskip("any_llm")
+    fake_llm = MagicMock()
+    fake_llm.acompletion = AsyncMock(side_effect=httpx.ReadTimeout(""))
+
+    with patch("headroom.backends.anyllm.AnyLLM.create", return_value=fake_llm):
+        backend = AnyLLMBackend(provider="anthropic")
+        events = [event async for event in backend.stream_message(_BODY, {})]
+
+    error_event = next(event for event in events if event.event_type == "error")
+    assert error_event.data["error"]["message"] == "ReadTimeout (no message)"
+
+
+@pytest.mark.asyncio
+async def test_openai_backend_boundaries_name_transport_errors_without_message() -> None:
+    pytest.importorskip("any_llm")
+    with (
+        patch(
+            "headroom.backends.anyllm.AnyLLM.create",
+            return_value=MagicMock(acompletion=AsyncMock(side_effect=httpx.ReadError(""))),
+        ),
+        patch(
+            "headroom.backends.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=httpx.ReadTimeout(""),
+        ),
+    ):
+        anyllm_backend = AnyLLMBackend(provider="openai")
+        anyllm_result = await anyllm_backend.send_openai_message(_BODY, {})
+        litellm_backend = LiteLLMBackend(provider="openrouter")
+        litellm_result = await litellm_backend.send_openai_message(_BODY, {})
+
+    assert anyllm_result.body["error"]["message"] == "ReadError (no message)"
+    assert anyllm_result.error == "ReadError (no message)"
+    assert litellm_result.body["error"]["message"] == "ReadTimeout (no message)"
+    assert litellm_result.error == "ReadTimeout (no message)"
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_boundaries_name_transport_errors_without_message() -> None:
+    pytest.importorskip("any_llm")
+    with (
+        patch(
+            "headroom.backends.anyllm.AnyLLM.create",
+            return_value=MagicMock(acompletion=AsyncMock(side_effect=httpx.ReadError(""))),
+        ),
+        patch(
+            "headroom.backends.litellm.acompletion",
+            new_callable=AsyncMock,
+            side_effect=httpx.ReadTimeout(""),
+        ),
+    ):
+        anyllm_backend = AnyLLMBackend(provider="openai")
+        anyllm_chunks = [chunk async for chunk in anyllm_backend.stream_openai_message(_BODY, {})]
+        litellm_backend = LiteLLMBackend(provider="openrouter")
+        litellm_chunks = [chunk async for chunk in litellm_backend.stream_openai_message(_BODY, {})]
+
+    assert '"message": "ReadError (no message)"' in anyllm_chunks[0]
+    assert '"message": "ReadTimeout (no message)"' in litellm_chunks[0]
 
 
 def _erroring_anthropic_backend() -> MagicMock:
