@@ -602,7 +602,7 @@ class AnyLLMBackend(Backend):
         status_code = 500
 
         error_message = format_exception_message(e)
-        error_str = error_message.lower()
+        error_str = str(e).lower()
         if "authentication" in error_str or "api_key" in error_str or "api key" in error_str:
             error_type = "invalid_api_key" if openai_format else "authentication_error"
             status_code = 401

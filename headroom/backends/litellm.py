@@ -1186,7 +1186,7 @@ class LiteLLMBackend(Backend):
             error_type = "api_error"
             status_code = 500
 
-            error_str = error_message.lower()
+            error_str = str(e).lower()
             if "authentication" in error_str or "credentials" in error_str:
                 error_type = "authentication_error"
                 status_code = 401
@@ -1795,7 +1795,7 @@ class LiteLLMBackend(Backend):
             error_type = "api_error"
             status_code = 500
 
-            error_str = error_message.lower()
+            error_str = str(e).lower()
             if "authentication" in error_str or "credentials" in error_str:
                 error_type = "invalid_api_key"
                 status_code = 401
