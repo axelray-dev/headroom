@@ -5626,9 +5626,9 @@ class OpenAIHandlerMixin:
         headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
         if is_chatgpt_auth:
             client = "codex"
-        client_declared_response_tools = (
-            bool(body.get("tools")) or _client_can_receive_memory_tools(client)
-        )
+        client_declared_response_tools = bool(
+            body.get("tools")
+        ) or _client_can_receive_memory_tools(client)
         if _ensure_chatgpt_responses_store_false(body, is_chatgpt_auth=is_chatgpt_auth):
             logger.info(f"[{request_id}] Responses: forced store=false for ChatGPT auth")
         responses_memory_tools_allowed = _allow_responses_memory_tools(is_chatgpt_auth)
@@ -7581,10 +7581,9 @@ class OpenAIHandlerMixin:
                         t.get("name") or t.get("function", {}).get("name", "?")
                         for t in (ws_response_body.get("tools") or [])
                     ]
-                    client_declared_ws_tools = (
-                        bool(ws_response_body.get("tools"))
-                        or _client_can_receive_memory_tools(client)
-                    )
+                    client_declared_ws_tools = bool(
+                        ws_response_body.get("tools")
+                    ) or _client_can_receive_memory_tools(client)
                     instr_preview = (ws_response_body.get("instructions") or "")[:200]
                     logger.info(
                         f"[{request_id}] WS Memory: Codex tools={existing_tool_names}, "
