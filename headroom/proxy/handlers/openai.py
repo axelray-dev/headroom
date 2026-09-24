@@ -164,6 +164,16 @@ def _codex_ws_compression_timeout_seconds() -> float:
 _WS_ALLOWED_ORIGINS_ENV = "HEADROOM_WS_ORIGINS"
 _CORS_ALLOWED_ORIGINS_ENV = "HEADROOM_CORS_ORIGINS"
 _CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+# A missing tool list is not proof that the client cannot handle tools. Keep
+# the legacy behavior for unknown clients and suppress injection only when the
+# client is explicitly identified as tool-incapable.
+_KNOWN_TOOL_INCAPABLE_CLIENTS = frozenset({"tool-incapable-test"})
+
+
+def _client_can_receive_memory_tools(client: str | None) -> bool:
+    return client not in _KNOWN_TOOL_INCAPABLE_CLIENTS
+
+
 # Codex mirrors the responses-lite request header into the response.create
 # frame body under client_metadata; upstream rejects gpt-5.x when it is
 # truthy. Stripping the WS handshake header alone is insufficient
@@ -5572,7 +5582,6 @@ class OpenAIHandlerMixin:
 
         bind_scope(tags, request.scope)
         client = classify_client(headers)
-        client_declared_response_tools = bool(body.get("tools")) or client == "codex"
 
         # Learn from the original client payload before memory context or
         # compression mutates it. This mirrors the Anthropic ingestion path.
@@ -5617,6 +5626,9 @@ class OpenAIHandlerMixin:
         headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
         if is_chatgpt_auth:
             client = "codex"
+        client_declared_response_tools = (
+            bool(body.get("tools")) or _client_can_receive_memory_tools(client)
+        )
         if _ensure_chatgpt_responses_store_false(body, is_chatgpt_auth=is_chatgpt_auth):
             logger.info(f"[{request_id}] Responses: forced store=false for ChatGPT auth")
         responses_memory_tools_allowed = _allow_responses_memory_tools(is_chatgpt_auth)
@@ -7569,7 +7581,10 @@ class OpenAIHandlerMixin:
                         t.get("name") or t.get("function", {}).get("name", "?")
                         for t in (ws_response_body.get("tools") or [])
                     ]
-                    client_declared_ws_tools = bool(ws_response_body.get("tools")) or client == "codex"
+                    client_declared_ws_tools = (
+                        bool(ws_response_body.get("tools"))
+                        or _client_can_receive_memory_tools(client)
+                    )
                     instr_preview = (ws_response_body.get("instructions") or "")[:200]
                     logger.info(
                         f"[{request_id}] WS Memory: Codex tools={existing_tool_names}, "
