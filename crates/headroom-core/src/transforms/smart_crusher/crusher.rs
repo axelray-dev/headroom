@@ -548,6 +548,12 @@ impl SmartCrusher {
                             // analysis threshold is crossed. Match the below-threshold path
                             // so nested values still receive their own safe transforms.
                             if result.strategy_info == "none:adaptive_at_limit" {
+                                info_parts.push(format!(
+                                    "{}({}->{})",
+                                    result.strategy_info,
+                                    n,
+                                    result.items.len()
+                                ));
                                 if prose_hook.is_some() {
                                     return (Value::Array(rows), info_parts.join(","));
                                 }
