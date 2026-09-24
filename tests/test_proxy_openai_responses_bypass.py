@@ -160,6 +160,7 @@ def test_responses_do_not_inject_memory_tools_without_client_tools(tools) -> Non
             "/v1/responses",
             headers={
                 "authorization": "Bearer test-key",
+                "x-client": "tool-incapable-test",
                 "x-headroom-user-id": "user-no-memory-tools",
             },
             json=payload,

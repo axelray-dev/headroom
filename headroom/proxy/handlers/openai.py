@@ -5513,7 +5513,6 @@ class OpenAIHandlerMixin:
 
         model = body.get("model", "unknown")
         stream = body.get("stream", False)
-        client_declared_response_tools = bool(body.get("tools"))
         body_mutation_tracker = BodyMutationTracker()
         _bypass = self._headroom_bypass_enabled(request.headers)
         if _bypass:
@@ -5573,6 +5572,7 @@ class OpenAIHandlerMixin:
 
         bind_scope(tags, request.scope)
         client = classify_client(headers)
+        client_declared_response_tools = bool(body.get("tools")) or client == "codex"
 
         # Learn from the original client payload before memory context or
         # compression mutates it. This mirrors the Anthropic ingestion path.
@@ -7569,7 +7569,7 @@ class OpenAIHandlerMixin:
                         t.get("name") or t.get("function", {}).get("name", "?")
                         for t in (ws_response_body.get("tools") or [])
                     ]
-                    client_declared_ws_tools = bool(ws_response_body.get("tools"))
+                    client_declared_ws_tools = bool(ws_response_body.get("tools")) or client == "codex"
                     instr_preview = (ws_response_body.get("instructions") or "")[:200]
                     logger.info(
                         f"[{request_id}] WS Memory: Codex tools={existing_tool_names}, "

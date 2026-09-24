@@ -204,7 +204,10 @@ async def test_ws_responses_do_not_inject_memory_tools_without_client_tools(tool
             json.dumps({"type": "response.completed", "response": {"id": "r_no_tools"}}),
         ]
     )
-    client_ws = _FakeWebSocket(frames=[_turn_with_tools("no tools requested", tools)])
+    client_ws = _FakeWebSocket(
+        frames=[_turn_with_tools("no tools requested", tools)],
+        headers={"authorization": "Bearer test", "x-client": "tool-incapable-test"},
+    )
     handler = _DummyOpenAIHandler()
     handler.memory_handler = _MemoryHandler()
 
