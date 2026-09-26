@@ -622,7 +622,11 @@ def test_openai_responses_memory_continuation_is_zdr_safe(store, include, monkey
         body["store"] = store
     request = _build_request(
         body,
-        {"Authorization": "Bearer sk-test", "x-headroom-user-id": "user-1"},
+        {
+            "Authorization": "Bearer sk-test",
+            "User-Agent": "codex-cli/0.5",
+            "x-headroom-user-id": "user-1",
+        },
     )
     handler = _ZdrResponsesHandler()
 
