@@ -164,14 +164,15 @@ def _codex_ws_compression_timeout_seconds() -> float:
 _WS_ALLOWED_ORIGINS_ENV = "HEADROOM_WS_ORIGINS"
 _CORS_ALLOWED_ORIGINS_ENV = "HEADROOM_CORS_ORIGINS"
 _CODEX_RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
-# A missing tool list is not proof that the client cannot handle tools. Keep
-# the legacy behavior for unknown clients and suppress injection only when the
-# client is explicitly identified as tool-incapable.
-_KNOWN_TOOL_INCAPABLE_CLIENTS = frozenset({"tool-incapable-test"})
+# Memory-tool injection needs affirmative protocol evidence. A caller that
+# explicitly supplies tools is handled separately at each endpoint; when the
+# caller omits them, only a real client known to support Headroom's memory
+# tools may opt in.
+_KNOWN_TOOL_CAPABLE_CLIENTS = frozenset({"codex"})
 
 
 def _client_can_receive_memory_tools(client: str | None) -> bool:
-    return client not in _KNOWN_TOOL_INCAPABLE_CLIENTS
+    return client in _KNOWN_TOOL_CAPABLE_CLIENTS
 
 
 # Codex mirrors the responses-lite request header into the response.create
@@ -5626,9 +5627,14 @@ class OpenAIHandlerMixin:
         headers, is_chatgpt_auth = _resolve_codex_routing_headers(headers)
         if is_chatgpt_auth:
             client = "codex"
+        memory_client = (
+            "codex"
+            if is_chatgpt_auth
+            else (None if request.scope.get("headroom_codex_client_stamped") else client)
+        )
         client_declared_response_tools = bool(
             body.get("tools")
-        ) or _client_can_receive_memory_tools(client)
+        ) or _client_can_receive_memory_tools(memory_client)
         if _ensure_chatgpt_responses_store_false(body, is_chatgpt_auth=is_chatgpt_auth):
             logger.info(f"[{request_id}] Responses: forced store=false for ChatGPT auth")
         responses_memory_tools_allowed = _allow_responses_memory_tools(is_chatgpt_auth)
@@ -6880,7 +6886,9 @@ class OpenAIHandlerMixin:
         # WS sessions bypass the HTTP middleware that stamps X-Client: codex on
         # the Responses endpoint, so apply the same path-based stamp here before
         # classify_client runs (parallels server.py / should_stamp_codex_client).
-        if should_stamp_codex_client(_ws_path, ws_headers):
+        codex_client_was_stamped = should_stamp_codex_client(_ws_path, ws_headers)
+        raw_client = classify_client(ws_headers)
+        if codex_client_was_stamped:
             ws_headers["x-client"] = "codex"
         # Identify the WS harness before downstream auth/header rewrites.
         # Captured in closure so per-turn RequestOutcome can stamp it.
@@ -6965,6 +6973,9 @@ class OpenAIHandlerMixin:
         )
 
         upstream_headers, is_chatgpt_auth = _resolve_codex_routing_headers(upstream_headers)
+        memory_client = (
+            "codex" if is_chatgpt_auth else (None if codex_client_was_stamped else raw_client)
+        )
         # OpenAI rejects newer Codex models when this client-only lite header leaks upstream.
         upstream_headers = {
             key: value
@@ -7583,7 +7594,7 @@ class OpenAIHandlerMixin:
                     ]
                     client_declared_ws_tools = bool(
                         ws_response_body.get("tools")
-                    ) or _client_can_receive_memory_tools(client)
+                    ) or _client_can_receive_memory_tools(memory_client)
                     instr_preview = (ws_response_body.get("instructions") or "")[:200]
                     logger.info(
                         f"[{request_id}] WS Memory: Codex tools={existing_tool_names}, "
