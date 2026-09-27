@@ -125,7 +125,7 @@ HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy --port 8787
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--memory` | `false` | Enable persistent user memory and provider-appropriate memory tools. When `--mode cache` is active, context injection is skipped because prefix stability takes precedence; use `--mode token` if you need memory recall. |
+| `--memory` | `false` | Enable persistent user memory and provider-appropriate memory tools. In `--mode cache`, automatic context injection is skipped only for Anthropic `/v1/messages` to preserve prefix stability; OpenAI chat/responses and Gemini append memory to the live-zone tail. Use `--mode token` for automatic memory context on the Anthropic path. |
 | `--memory-db-path` | `{cwd}/.headroom/memory.db` | Override the memory SQLite path |
 | `--no-memory-tools` | `false` | Disable automatic memory tool injection |
 | `--no-memory-context` | `false` | Disable automatic memory context injection |
@@ -173,17 +173,20 @@ HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy
 
 **`general`** — Token-mode compression for non-coding conversations. No turn protection (`protect_recent=0` — nothing code-positional to preserve) and does not compress user or system messages. Uses the standard lossless pipeline.
 
-### Profiles override CLI flags
+### Profile defaults and overrides
 
-A profile's `proxy_mode` setting overrides the `--mode` flag. The `coding` profile sets `proxy_mode="cache"`, so `--mode token` has **no effect** when coding is active:
+Profiles seed defaults for proxy mode and compression settings. Explicit settings take precedence in this order: `--mode` (CLI) > `HEADROOM_MODE` (environment) > the selected profile's default. The `coding` profile defaults to `cache`, but an explicit `--mode token` still takes effect:
 
 ```bash
-# These are equivalent — coding's cache mode always wins
+# Coding's default mode is cache
 headroom proxy
-headroom proxy --mode token          # --mode token is silently overridden
+# An explicit CLI mode overrides the profile default
+headroom proxy --mode token
+# An explicit environment mode also overrides the profile default
+HEADROOM_MODE=token HEADROOM_SAVINGS_PROFILE=coding headroom proxy
 ```
 
-To run in token mode, switch to a profile that uses it:
+You can also choose a profile whose default is token mode:
 
 ```bash
 HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy --mode token
