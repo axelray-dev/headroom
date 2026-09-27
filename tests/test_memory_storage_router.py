@@ -500,6 +500,7 @@ def test_resolver_encoded_cwd_header_matches_literal_cwd_identity() -> None:
     assert via_header[0] == via_override[0]
     assert via_header[1] == via_override[1] == "día-api"
 
+
 # Claude Code 2.x sends the env block as an isMeta user message (#3595)
 # ---------------------------------------------------------------------------
 
