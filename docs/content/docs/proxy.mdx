@@ -114,7 +114,7 @@ headroom proxy --mode cache
 
 An unrecognized `HEADROOM_SAVINGS_PROFILE` value logs a warning and falls back to `coding` (the same default an unset variable resolves to) — the proxy never fails to start over a bad profile name. `balanced` is used only as a last-resort fallback when the runtime has no `coding` entry at all (old-runtime/new-client version skew). See `headroom/agent_savings.py` for each profile's full set of knobs.
 
-Because the default `coding` profile uses **cache** mode (and the proxy's own default mode is also `cache`), Headroom runs in cache mode out of the box. Mode precedence: an explicit `--mode` wins, otherwise `HEADROOM_MODE` (which a profile seeds), otherwise the `cache` default. To run token mode, pass `--mode token` or choose a token-mode profile:
+Because the default `coding` profile uses **cache** mode (and the proxy's own default mode is also `cache`), Headroom runs in cache mode out of the box. For a direct `headroom proxy` invocation, mode precedence is `--mode` > `HEADROOM_MODE` > the `cache` default. The selected `HEADROOM_SAVINGS_PROFILE` does not provide a third-level mode fallback after startup; wrapped launches may seed `HEADROOM_MODE` before starting the proxy. To run token mode, pass `--mode token` or set `HEADROOM_MODE=token`:
 
 ```bash
 # Aggressive ~90% token-savings profile
@@ -175,7 +175,7 @@ HEADROOM_SAVINGS_PROFILE=agent-90 headroom proxy
 
 ### Profile defaults and overrides
 
-Profiles seed defaults for proxy mode and compression settings. Explicit settings take precedence in this order: `--mode` (CLI) > `HEADROOM_MODE` (environment) > the selected profile's default. The `coding` profile defaults to `cache`, but an explicit `--mode token` still takes effect:
+Profiles seed compression settings. For a direct `headroom proxy` invocation, explicit mode settings take precedence in this order: `--mode` (CLI) > `HEADROOM_MODE` (environment) > the `cache` default. The selected profile does not replace that final fallback, but wrapped launches may pre-seed `HEADROOM_MODE`. The `coding` profile defaults to `cache`, and an explicit `--mode token` still takes effect:
 
 ```bash
 # Coding's default mode is cache
