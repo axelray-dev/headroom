@@ -4401,10 +4401,35 @@ class AnthropicHandlerMixin:
                                     provider="anthropic",
                                 )
                                 if final_resp_json is resp_json:
-                                    logger.info(
-                                        f"[{request_id}] CCR: Continuation failed; "
-                                        "forwarding the original upstream response"
+                                    # The handler intentionally returns the same
+                                    # object for both a failed continuation and
+                                    # an intentional mixed-tool skip. Identity is
+                                    # still the right signal for whether to
+                                    # re-serialize, but not for the diagnostic
+                                    # message; classify the residual tools first.
+                                    from headroom.ccr.response_handler import (
+                                        RESIDUAL_CCR_ERROR,
+                                        RESIDUAL_CCR_SKIPPED_MIXED,
                                     )
+
+                                    residual_status = self.ccr_response_handler.residual_ccr_status(
+                                        final_resp_json, "anthropic"
+                                    )
+                                    if residual_status == RESIDUAL_CCR_SKIPPED_MIXED:
+                                        logger.info(
+                                            f"[{request_id}] CCR: Skipped retrieval — "
+                                            "headroom_retrieve returned alongside a client "
+                                            "tool for the client to resolve"
+                                        )
+                                    elif residual_status == RESIDUAL_CCR_ERROR:
+                                        logger.info(
+                                            f"[{request_id}] CCR: Continuation failed; "
+                                            "forwarding the original upstream response"
+                                        )
+                                    else:
+                                        logger.info(
+                                            f"[{request_id}] CCR: Retrieval handled successfully"
+                                        )
                                 else:
                                     final_resp_json = preserve_opaque_response_fields(
                                         resp_json, final_resp_json
