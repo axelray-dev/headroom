@@ -20,9 +20,11 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from headroom import fileperms as _fileperms
 from headroom import paths as _paths
 from headroom.proxy import (
     diagnostic_decode_policy,
@@ -91,7 +93,11 @@ from headroom.proxy.tool_definition_serialization import (
     serialize_tool_definition_canonical as _serialize_tool_definition_canonical,
 )
 from headroom.proxy.tool_injection_config import (
+    CcrToolInjectionMode,
     ToolInjectionStickyMode,
+)
+from headroom.proxy.tool_injection_config import (
+    get_ccr_tool_injection_mode as _get_ccr_tool_injection_mode,
 )
 from headroom.proxy.tool_injection_config import (
     get_tool_injection_sticky_mode as _get_tool_injection_sticky_mode,
@@ -1723,6 +1729,79 @@ def _headroom_log_dir() -> Path:
 _PROXY_LOG_HANDLER_NAME = "headroom.proxy.file"
 
 
+class _OwnerOnlyRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler whose log file is only readable by its owner.
+
+    ``logging`` opens the stream itself — once at construction and again for
+    every rollover — so the process umask would otherwise decide the mode, and
+    there is no hook to pass one. ``_open`` is replaced outright (rather than
+    pre-creating the file and delegating) so that the descriptor the handler
+    writes through is the same one the mode was applied to, and so that
+    ``O_NOFOLLOW`` is in force on the open the stream actually uses.
+
+    Three paths, all of which have to hold the guarantee:
+
+    * first open — created 0600 instead of at the umask;
+    * an existing log — ``O_CREAT``'s mode does not apply to a file that
+      already exists, so the descriptor is tightened with ``fchmod``;
+    * rollover — ``_open`` runs again for the new base file, and ``rotate``
+      re-applies the mode to each backup, so ``proxy-8000.log.1`` is no more
+      readable than ``proxy-8000.log``. Backups left behind by an older,
+      unhardened build are tightened when the handler is constructed.
+
+    The mode bits carry this only on POSIX; see :mod:`headroom.fileperms` for
+    what is and is not claimed on Windows.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._restrict_existing_backups()
+
+    def _restrict_existing_backups(self) -> None:
+        for index in range(1, (self.backupCount or 0) + 1):
+            _fileperms.restrict_path_to_owner(
+                self.rotation_filename(f"{self.baseFilename}.{index}")
+            )
+
+    def _open(self):  # type: ignore[no-untyped-def]
+        return _fileperms.open_owner_only(
+            self.baseFilename,
+            self.mode,
+            encoding=self.encoding,
+            errors=getattr(self, "errors", None),
+        )
+
+    def rotate(self, source: str, dest: str) -> None:
+        super().rotate(source, dest)
+        # os.rename carries the mode across, but a configured ``rotator`` (or a
+        # copy-based one) need not, so the invariant is asserted on the result
+        # rather than assumed from how it got there.
+        _fileperms.restrict_path_to_owner(dest)
+
+
+_owner_only_warning_emitted = False
+
+
+def _warn_once_if_owner_only_unsupported(log_path: Path) -> None:
+    """Say plainly, once per process, when the file cannot be made owner-only.
+
+    A security control that quietly does nothing on a supported platform is
+    worse than no control, so Windows gets told rather than left to assume the
+    0600 in the docs applies to it.
+    """
+    global _owner_only_warning_emitted
+    if _fileperms.OWNER_ONLY_SUPPORTED or _owner_only_warning_emitted:
+        return
+    _owner_only_warning_emitted = True
+    logger.warning(
+        "Headroom cannot create %s owner-only on this platform: file modes do not "
+        "control read access here, and Headroom does not set an ACL. The runtime log "
+        "can contain request and response content (--log-messages, wire debug, "
+        "HEADROOM_LOG_PAYLOAD_PREVIEW) — protect the log directory itself.",
+        log_path,
+    )
+
+
 def _setup_file_logging(
     port: int | None = None,
     *,
@@ -1737,13 +1816,34 @@ def _setup_file_logging(
     The file is keyed by *port* so concurrent instances rotate separate logs.
     Multi-worker callers also pass *process_id* so same-port workers cannot
     race during rollover. When *port* is omitted the legacy shared name is used.
+
+    The log is **always** created owner-only, and so are its rotated backups —
+    not only when ``HEADROOM_LOG_PAYLOAD_PREVIEW`` is on. Payload previews are
+    one of several sources of request content in this file: ``--log-messages``
+    bodies, wire debug dumps and query logging land here too, each behind its
+    own switch, so keying the file's permissions off any one of them leaves the
+    others writing a sensitive file at the umask. On POSIX that is enforced;
+    on Windows it is not — see :mod:`headroom.fileperms`.
     """
-    from logging.handlers import RotatingFileHandler
+    handler_cls = _OwnerOnlyRotatingFileHandler
 
     try:
         log_dir = _headroom_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = _paths.proxy_log_path(port, process_id=process_id)
+        if log_path.is_symlink():
+            # Fail closed. A symlink at the log path redirects both the write
+            # and the mode we set on it, so whoever planted it chooses where
+            # request content lands and who can read it. O_NOFOLLOW catches
+            # this in _open too; the explicit check is what carries the
+            # refusal on platforms without that flag, and lets us say why.
+            logger.warning(
+                "Refusing to write the Headroom runtime log: %s is a symlink. "
+                "Remove it (or point HEADROOM_WORKSPACE_DIR elsewhere) to restore logging.",
+                log_path,
+            )
+            return
+        _warn_once_if_owner_only_unsupported(log_path)
         # Attach to the headroom root logger so all sub-loggers are captured.
         # Disable propagation to root to avoid duplicate writes when
         # wrap.py redirects stderr to the same log file.
@@ -1763,7 +1863,7 @@ def _setup_file_logging(
         ]
         if any(Path(h.baseFilename) == log_path for h in existing):
             return
-        handler = RotatingFileHandler(
+        handler = handler_cls(
             log_path,
             maxBytes=10 * 1024 * 1024,  # 10 MB
             backupCount=5,
@@ -2191,6 +2291,15 @@ def get_tool_injection_sticky_mode() -> ToolInjectionStickyMode:
     return _get_tool_injection_sticky_mode()
 
 
+def get_ccr_tool_injection_mode() -> CcrToolInjectionMode:
+    """Return when the CCR retrieval tool enters the tools array.
+
+    Read at request time so operators can flip behaviour without a restart.
+    Unknown values raise loudly per the no-silent-fallback build constraint.
+    """
+    return _get_ccr_tool_injection_mode()
+
+
 def get_tool_tracker_max_sessions() -> int:
     """Return the LRU bound for `SessionToolTracker` (sessions cap)."""
     return _get_tool_tracker_max_sessions()
@@ -2606,6 +2715,7 @@ def apply_session_sticky_ccr_tool(
     existing_tools: list[dict[str, Any]] | None,
     has_compressed_content_this_turn: bool,
     history_has_ccr_reference: bool = False,
+    allow_eager: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Apply sticky-on CCR retrieval-tool injection per :class:`SessionCcrTracker`.
 
@@ -2661,7 +2771,9 @@ def apply_session_sticky_ccr_tool(
     # definition and the provider rejects the request because history still
     # references it (#2440).
     if not session_id:
-        if not (has_compressed_content_this_turn or history_has_ccr_reference):
+        # See the fresh-session branch below for what gates eager injection.
+        eager = allow_eager and bool(tools_out) and get_ccr_tool_injection_mode() == "eager"
+        if not (eager or has_compressed_content_this_turn or history_has_ccr_reference):
             log_tool_injection_decision(
                 provider=provider,
                 session_id=None,
@@ -2677,7 +2789,7 @@ def apply_session_sticky_ccr_tool(
             session_id=None,
             decision="inject_first_time"
             if has_compressed_content_this_turn
-            else "inject_history_reference",
+            else ("inject_history_reference" if history_has_ccr_reference else "inject_eager"),
             tool_definition_bytes_count=len(replay.canonical_bytes),
             request_id=request_id,
         )
@@ -2727,8 +2839,37 @@ def apply_session_sticky_ccr_tool(
         )
         return tools_out, True
 
-    # Fresh session — only inject when this turn produced compressed content.
-    if not has_compressed_content_this_turn:
+    # Fresh session. `tools` is the head of Anthropic's cache key, so the
+    # moment this tool enters the array decides what it costs. Waiting for the
+    # first compression means entering against a fully warm prefix and
+    # invalidating all of it — measured on a customer session at 113,888 tokens
+    # of cache write to save 2,205 tokens of content, a ~594-turn payback that
+    # no session reaches. The definition is ~119 tokens; injecting it on the
+    # first request instead folds that cost into the cache write the session
+    # was always going to pay, and the array never changes again.
+    #
+    # The historical gate is still reachable via HEADROOM_CCR_TOOL_INJECTION=lazy
+    # for operators who would rather keep the tool out of conversations that
+    # never compress. A spurious call costs a round trip, not an error: an
+    # unknown hash resolves to a structured {"status": "missing"} tool result
+    # (see CCRResponseHandler._execute_retrieval), not an exception or a 400.
+    #
+    # Eager injection needs three things to be true, because it is the one path
+    # that touches the tools array before anything has been compressed:
+    #
+    #   allow_eager -- the caller confirms it may rewrite this request's tools
+    #     at all. Under `--no-optimize` or a bypass header nothing will ever be
+    #     compressed, so the tool would be permanently unredeemable; the old
+    #     gate got this for free because no compression meant no injection.
+    #   a non-empty client tools array -- adding the first entry would turn a
+    #     no-tools request into a tools request and let the model emit tool_use
+    #     blocks the client never expected (#728). Such a client also has no
+    #     tool results to compress, so there is no warm tools segment to
+    #     protect. The cache problem is a harness problem, and harnesses always
+    #     send tools.
+    #   the eager mode -- operators can restore the historical gate.
+    eager = allow_eager and bool(tools_out) and get_ccr_tool_injection_mode() == "eager"
+    if not (eager or has_compressed_content_this_turn):
         log_tool_injection_decision(
             provider=provider,
             session_id=session_id,
@@ -2744,7 +2885,7 @@ def apply_session_sticky_ccr_tool(
     log_tool_injection_decision(
         provider=provider,
         session_id=session_id,
-        decision="inject_first_time",
+        decision="inject_first_time" if has_compressed_content_this_turn else "inject_eager",
         tool_definition_bytes_count=len(replay.canonical_bytes),
         request_id=request_id,
     )
@@ -2874,12 +3015,41 @@ async def _read_request_body_bytes(request: Request) -> bytes:
 
     Mirrors ``_read_request_json`` but returns the bytes pre-parse so
     forwarders can implement byte-faithful passthrough (PR-A3, fixes P0-2).
-    Raises ``ValueError`` on any decompression failure, and the
-    :class:`RequestBodyTooLarge` subclass when the *decompressed* body would
-    exceed :data:`MAX_DECOMPRESSED_BODY_SIZE`.
+    Raises the :class:`RequestBodyTooLarge` ``ValueError`` subclass if the
+    wire-size body itself exceeds :data:`MAX_REQUEST_BODY_SIZE` (checked while
+    streaming, before the full body is buffered) or if the *decompressed*
+    body would exceed :data:`MAX_DECOMPRESSED_BODY_SIZE`. Raises plain
+    ``ValueError`` on any other decompression failure.
     """
     encoding = (request.headers.get("content-encoding") or "").lower().strip()
-    raw = await request.body()
+
+    # Content-Length is an optimization only, not the enforcement boundary: it
+    # can be absent, understated, or belong to a chunked transfer. The
+    # streaming loop below is what actually bounds every case (#3479).
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > MAX_REQUEST_BODY_SIZE:
+            raise RequestBodyTooLarge(
+                f"Request body exceeds {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB "
+                f"(Content-Length: {declared})"
+            )
+
+    chunks = bytearray()
+    async for chunk in request.stream():
+        chunks.extend(chunk)
+        if len(chunks) > MAX_REQUEST_BODY_SIZE:
+            raise RequestBodyTooLarge(
+                f"Request body exceeds {MAX_REQUEST_BODY_SIZE // (1024 * 1024)}MB"
+            )
+    raw: bytes = bytes(chunks)
+    # Cache like Starlette's own body() would, so any other .body() caller on
+    # this request (there is none today, but future callers get the same
+    # semantics) sees the bytes already read rather than a consumed stream.
+    request._body = raw
 
     # Every branch below decompresses incrementally against
     # MAX_DECOMPRESSED_BODY_SIZE. RequestBodyTooLarge is re-raised ahead of the
@@ -3837,6 +4007,11 @@ def inject_tool_search_deferral(
 # ---------------------------------------------------------------------------
 
 _TOOL_SEARCH_RESULT_TYPE = "tool_search_tool_result"
+# A client-side tool-search result (a plain ``tool_result`` carrying
+# ``tool_reference`` blocks) that is left with no resolvable references keeps
+# this text as its content, so its paired ``tool_use`` stays valid -- dropping
+# the block outright would orphan the tool_use (which 400s on its own).
+_CLIENT_TOOL_REF_PLACEHOLDER = "[tool reference no longer available]"
 
 
 def _tool_search_reference_names(content: Any) -> list[str]:
@@ -3871,10 +4046,12 @@ _TOOL_SEARCH_PLACEHOLDER_BLOCK: dict[str, Any] = {
 def strip_unsupported_tool_search_blocks(messages: Any, tools: Any) -> tuple[Any, int]:
     """Neutralize tool-search blocks this request's ``tools`` array cannot support.
 
-    A block pair is unsupportable when the request carries no ``tool_search_tool_*``
-    tool, or when a ``tool_reference`` names a tool absent from ``tools`` — the two
-    shapes Anthropic rejects. Both the ``tool_search_tool_result`` and its paired
-    ``server_tool_use`` are handled (an orphan of either 400s on its own).
+    Server-side search block pairs require a matching search mechanism and
+    referenced tools in the outbound tools array. Unsupported pairs are
+    replaced in place. Client-side ``tool_result`` references need only their
+    target definitions: missing references are removed from the nested result,
+    with ``_CLIENT_TOOL_REF_PLACEHOLDER`` retaining an otherwise empty result
+    so its paired ``tool_use`` is not orphaned.
 
     Replace in place rather than remove (#3456). The block indexes of a message
     are load-bearing: ``thinking_block_fingerprint`` keys a signed thinking block
@@ -3924,8 +4101,41 @@ def strip_unsupported_tool_search_blocks(messages: Any, tools: Any) -> tuple[Any
 
         neutralize_indexes: set[int] = set()
         orphaned_ids: set[str] = set()
+        rewrites: dict[int, Any] = {}
         for index, block in enumerate(content):
-            if not isinstance(block, dict) or block.get("type") != _TOOL_SEARCH_RESULT_TYPE:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            # Client-side shape: a plain tool_result carrying tool_reference
+            # blocks. Keep resolvable references (deferred-but-present included);
+            # drop the unsupportable ones. If none survive, swap the content for
+            # a placeholder so the paired tool_use is not orphaned.
+            if block_type == "tool_result" and isinstance(block.get("content"), list):
+                inner = block["content"]
+                if any(isinstance(b, dict) and b.get("type") == "tool_reference" for b in inner):
+                    kept_inner: list[Any] = []
+                    dropped = 0
+                    for b in inner:
+                        if isinstance(b, dict) and b.get("type") == "tool_reference":
+                            # Validated against the available definitions ONLY.
+                            # A built-in tool_search_tool_* is deliberately not
+                            # required: Anthropic supports a custom client-side
+                            # search that returns tool_reference blocks from a
+                            # plain tool_use/tool_result pair, referencing the
+                            # top-level tools array. Gating on the server tool
+                            # deleted those valid references.
+                            name = b.get("tool_name") or b.get("name")
+                            if name is not None and str(name) not in available:
+                                dropped += 1
+                                continue
+                        kept_inner.append(b)
+                    if dropped:
+                        new_block = dict(block)
+                        new_block["content"] = kept_inner or _CLIENT_TOOL_REF_PLACEHOLDER
+                        rewrites[index] = new_block
+                        removed += dropped
+                continue
+            if block_type != _TOOL_SEARCH_RESULT_TYPE:
                 continue
             names = _tool_search_reference_names(block.get("content"))
             if has_search_tool and all(name in available for name in names):
@@ -3944,7 +4154,7 @@ def strip_unsupported_tool_search_blocks(messages: Any, tools: Any) -> tuple[Any
             if str(block.get("id", "")) in orphaned_ids or (is_search_call and not has_search_tool):
                 neutralize_indexes.add(index)
 
-        if not neutralize_indexes:
+        if not neutralize_indexes and not rewrites:
             out.append(message)
             continue
 
@@ -3952,7 +4162,9 @@ def strip_unsupported_tool_search_blocks(messages: Any, tools: Any) -> tuple[Any
         removed += len(neutralize_indexes)
         repaired = dict(message)
         repaired["content"] = [
-            dict(_TOOL_SEARCH_PLACEHOLDER_BLOCK) if index in neutralize_indexes else block
+            dict(_TOOL_SEARCH_PLACEHOLDER_BLOCK)
+            if index in neutralize_indexes
+            else rewrites.get(index, block)
             for index, block in enumerate(content)
         ]
         out.append(repaired)
