@@ -17,6 +17,7 @@ from headroom.proxy.auth_mode import classify_client, supports_mid_turn_coalesci
 from headroom.proxy.handlers._debug_dump import write_upstream_error_dump
 from headroom.proxy.helpers import (
     RETRYABLE_OVERLOAD_STATUSES,
+    apply_openai_api_key_fallback,
     jitter_delay_ms,
     retry_after_ms,
 )
@@ -1129,6 +1130,13 @@ class StreamingMixin:
         if supports_mid_turn_coalescing(client):
             self._active_streams.add(session_key)
         headers = await apply_copilot_api_auth(headers, url=url)
+        if provider == "openai":
+            headers = apply_openai_api_key_fallback(
+                headers,
+                upstream_url=url,
+                config=self.config,
+                request_id=request_id,
+            )
         start_time = time.time()
 
         # Byte-faithful forwarding (PR-A3, fixes P0-2). Resolve outbound
